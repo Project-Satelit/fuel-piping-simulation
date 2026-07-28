@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fuel Piping SCADA Simulation</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tone.js untuk Audio Alarm Industri -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        .flow-anim {
+            stroke-dasharray: 10;
+            animation: flow 1s linear infinite;
+        }
+        @keyframes flow {
+            from { stroke-dashoffset: 20; }
+            to { stroke-dashoffset: 0; }
+        }
+        .cavitation-shake {
+            animation: shake 0.4s infinite;
+            stroke: #ec4899;
+        }
+        @keyframes shake {
+            0% { transform: translate(1px, 1px) rotate(0deg); }
+            20% { transform: translate(-2px, 0px) rotate(1deg); }
+            40% { transform: translate(2px, -1px) rotate(-1deg); }
+            60% { transform: translate(-2px, 1px) rotate(0deg); }
+            80% { transform: translate(2px, 1px) rotate(1deg); }
+            100% { transform: translate(1px, -1px) rotate(0deg); }
+        }
+        .trip-blink {
+            animation: blink 0.5s infinite;
+        }
+        @keyframes blink {
+            0% { fill: #ef4444; opacity: 1; }
+            50% { fill: #fef2f2; opacity: 0.3; }
+            100% { fill: #ef4444; opacity: 1; }
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-blue-500 selection:text-white">
+
+    <!-- Top Header SCADA Navigation -->
+    <header class="bg-slate-900 border-b border-slate-800 px-4 py-3 sticky top-0 z-50 flex flex-wrap justify-between items-center gap-3 shadow-md">
+        <div class="flex items-center gap-3">
+            <div class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" id="status-dot"></div>
+            <div>
+                <h1 class="text-lg md:text-xl font-bold tracking-wide text-blue-400 flex items-center gap-2">
+                    FUEL HANDLING SCADA
+                    <span class="text-xs bg-blue-950 text-blue-300 border border-blue-800 px-2 py-0.5 rounded font-mono">v3.5 Responsive</span>
+                </h1>
+                <p class="text-xs text-slate-400 hidden sm:block">Ebsray V40 (37kW) | 4" Header | LC M-30 | 1" PRV Return</p>
+            </div>
+        </div>
+
+        <!-- Viewport Switcher & Audio Enable -->
+        <div class="flex items-center gap-2">
+            <div class="bg-slate-800 p-1 rounded-lg border border-slate-700 flex text-xs">
+                <button id="view-auto" class="px-2 py-1 rounded bg-blue-600 text-white font-medium transition-all">Auto</button>
+                <button id="view-desktop" class="px-2 py-1 rounded text-slate-400 hover:text-white transition-all">Desktop View</button>
+                <button id="view-mobile" class="px-2 py-1 rounded text-slate-400 hover:text-white transition-all">Mobile View</button>
+            </div>
+            
+            <button id="btn-audio-init" class="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 p-2 rounded-lg text-xs flex items-center gap-1">
+                <span id="audio-icon">🔇</span>
+                <span class="hidden md:inline" id="audio-label">Aktifkan Suara</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Global Emergency Banner -->
+    <div id="alarm-banner" class="hidden bg-red-600 text-white px-4 py-2 font-bold text-center text-sm md:text-base animate-pulse flex justify-between items-center shadow-lg z-40">
+        <span class="flex items-center gap-2">
+            🚨 <span id="alarm-banner-text">TERDETEKSI TRIP SISTEM - OVERPRESSURE / RESTRIKSI KRITIS</span>
+        </span>
+        <button id="btn-ack-banner" class="bg-black/40 hover:bg-black/60 text-white text-xs px-3 py-1 rounded border border-white/30 uppercase tracking-wider font-semibold">
+            Acknowledge
+        </button>
+    </div>
+
+    <!-- Main Container -->
+    <main id="app-container" class="flex-grow p-2 sm:p-4 max-w-[1800px] w-full mx-auto flex flex-col lg:flex-row gap-4 transition-all duration-300">
+        
+        <!-- SVG SCADA Canvas Area -->
+        <div class="w-full lg:w-7/12 xl:w-2/3 bg-slate-900 border border-slate-800 rounded-xl p-2 sm:p-4 relative flex flex-col justify-between shadow-xl min-h-[420px] sm:min-h-[520px]">
+            
+            <div class="flex justify-between items-center mb-2 px-2 text-xs text-slate-400 font-mono">
+                <div class="flex items-center gap-4">
+                    <span>STATUS: <strong id="scada-state-text" class="text-emerald-400">READY</strong></span>
+                    <span class="hidden sm:inline">P-HEADER: <strong id="header-press-text" class="text-blue-400">1.2 Bar</strong></span>
+                </div>
+                <span>SYSTEM FLOW: <strong id="header-flow-text" class="text-blue-400">0.0 L/s</strong></span>
+            </div>
+
+            <!-- Responsive Interactive Canvas -->
+            <div class="relative w-full h-full flex items-center justify-center overflow-hidden bg-slate-950/60 rounded-lg border border-slate-800/80">
+                <svg id="piping-svg" viewBox="0 0 1000 600" class="w-full h-auto max-h-[70vh] object-contain drop-shadow-md">
+                    
+                    <!-- Tanggul / Bundwall -->
+                    <rect x="20" y="310" width="230" height="170" fill="none" stroke="#475569" stroke-width="3" stroke-dasharray="6"/>
+                    <text x="30" y="470" fill="#64748b" font-size="11" font-family="monospace">Bundwall (1.8M Liter / H: 1m)</text>
+
+                    <!-- Storage Tank -->
+                    <rect x="40" y="40" width="160" height="310" fill="#1e293b" stroke="#64748b" stroke-width="2" rx="4"/>
+                    <rect id="tank-level" x="40" y="90" width="160" height="260" fill="#2563eb" opacity="0.85"/>
+                    <text x="120" y="30" fill="#f8fafc" font-size="13" text-anchor="middle" font-weight="bold">STORAGE TANK</text>
+                    <text x="120" y="170" fill="#ffffff" font-size="11" text-anchor="middle" opacity="0.8">Kapasitas: 1,500,000 L</text>
+                    <text id="tank-vol-text" x="120" y="190" fill="#ffffff" font-size="15" text-anchor="middle" font-weight="bold" font-family="monospace">1,500,000 L</text>
+
+                    <!-- Drain / Sample Line -->
+                    <polyline points="120,350 120,390 165,390" fill="none" stroke="#475569" stroke-width="6"/>
+                    <circle cx="165" cy="390" r="6" fill="#ef4444"/>
+                    <text x="178" y="394" fill="#94a3b8" font-size="10">Drain/Sample</text>
+
+                    <!-- Suction Header (4 inch) -->
+                    <polyline points="200,290 240,290" fill="none" stroke="#475569" stroke-width="12"/>
+                    <text x="205" y="280" fill="#94a3b8" font-size="11" font-weight="bold">4" Suction</text>
+
+                    <!-- LINE A (Top Branch) -->
+                    <polyline points="240,290 240,210 440,210" fill="none" stroke="#334155" stroke-width="8"/>
+                    <polyline id="flow-line-a" points="240,290 240,210 440,210" fill="none" stroke="#38bdf8" stroke-width="4" class="hidden flow-anim"/>
+                    
+                    <!-- Ball Valve A -->
+                    <circle cx="270" cy="210" r="10" fill="#cbd5e1" stroke="#475569" stroke-width="2"/>
+                    <text id="txt-valve-a" x="270" y="192" fill="#e2e8f0" font-size="10" text-anchor="middle">BV-A: 100%</text>
+                    
+                    <!-- Strainer A -->
+                    <polygon points="310,200 330,200 320,220" fill="#f97316"/>
+                    <text id="txt-strainer-a" x="320" y="192" fill="#e2e8f0" font-size="10" text-anchor="middle">Str-A: 100%</text>
+                    
+                    <!-- Pump A -->
+                    <circle id="pump-a" cx="390" cy="210" r="22" fill="#1e293b" stroke="#64748b" stroke-width="3"/>
+                    <text x="390" y="214" fill="#ffffff" font-size="11" text-anchor="middle" font-weight="bold">P-A</text>
+                    <text id="txt-pump-a-speed" x="390" y="246" fill="#94a3b8" font-size="9" text-anchor="middle">Ebsray V40 (100%)</text>
+                    
+                    <!-- LINE B (Bottom Branch) -->
+                    <polyline points="240,290 240,370 440,370" fill="none" stroke="#334155" stroke-width="8"/>
+                    <polyline id="flow-line-b" points="240,290 240,370 440,370" fill="none" stroke="#38bdf8" stroke-width="4" class="hidden flow-anim"/>
+                    
+                    <!-- Ball Valve B -->
+                    <circle cx="270" cy="370" r="10" fill="#cbd5e1" stroke="#475569" stroke-width="2"/>
+                    <text id="txt-valve-b" x="270" y="398" fill="#e2e8f0" font-size="10" text-anchor="middle">BV-B: 100%</text>
+                    
+                    <!-- Strainer B -->
+                    <polygon points="310,360 330,360 320,380" fill="#f97316"/>
+                    <text id="txt-strainer-b" x="320" y="398" fill="#e2e8f0" font-size="10" text-anchor="middle">Str-B: 100%</text>
+                    
+                    <!-- Pump B -->
+                    <circle id="pump-b" cx="390" cy="370" r="22" fill="#1e293b" stroke="#64748b" stroke-width="3"/>
+                    <text x="390" y="374" fill="#ffffff" font-size="11" text-anchor="middle" font-weight="bold">P-B</text>
+                    <text id="txt-pump-b-speed" x="390" y="406" fill="#94a3b8" font-size="9" text-anchor="middle">Ebsray V40 (100%)</text>
+
+                    <!-- Discharge Convergence (4 inch) -->
+                    <polyline points="440,210 490,210 490,290" fill="none" stroke="#334155" stroke-width="12"/>
+                    <polyline points="440,370 490,370 490,290" fill="none" stroke="#334155" stroke-width="12"/>
+                    <polyline points="490,290 820,290" fill="none" stroke="#334155" stroke-width="12"/>
+                    
+                    <!-- Flow Animations Discharge -->
+                    <polyline id="flow-main" points="440,210 490,210 490,290 820,290" fill="none" stroke="#38bdf8" stroke-width="6" class="hidden flow-anim"/>
+                    <polyline id="flow-main-b" points="440,370 490,370 490,290" fill="none" stroke="#38bdf8" stroke-width="6" class="hidden flow-anim"/>
+                    <text x="500" y="278" fill="#94a3b8" font-size="11" font-weight="bold">4" Discharge Header</text>
+
+                    <!-- Pressure Switch (PS-1) -->
+                    <rect id="ps-1" x="515" y="260" width="22" height="22" fill="#eab308" rx="3" stroke="#ca8a04" stroke-width="1"/>
+                    <line points="526,282 526,290" stroke="#eab308" stroke-width="2"/>
+                    <text x="526" y="252" fill="#f8fafc" font-size="10" text-anchor="middle" font-weight="bold">PS-1 (4.1 Bar)</text>
+                    <text id="ps-trip-text" x="526" y="236" fill="#ef4444" font-size="12" text-anchor="middle" font-weight="bold" class="hidden trip-blink">TRIPPED!</text>
+
+                    <!-- PRV (Pressure Relief Valve) & 1" Bypass Line -->
+                    <polygon id="prv-body" points="580,280 600,280 590,260" fill="#22c55e"/>
+                    <text x="590" y="252" fill="#ffffff" font-size="10" text-anchor="middle" font-weight="bold">PRV (4.0 Bar)</text>
+                    <text id="prv-actual-pressure" x="590" y="236" fill="#38bdf8" font-size="13" font-weight="bold" text-anchor="middle" font-family="monospace">0.0 Bar</text>
+                    
+                    <!-- 1 inch bypass piping back to tank -->
+                    <polyline points="590,260 590,110 120,110" fill="none" stroke="#475569" stroke-width="3" stroke-dasharray="3"/>
+                    <text x="430" y="103" fill="#94a3b8" font-size="10">1" PRV Return Line (Bypass)</text>
+                    <polyline id="prv-flow" points="590,260 590,110 120,110" fill="none" stroke="#eab308" stroke-width="2" class="hidden flow-anim"/>
+                    <text id="prv-warn" x="390" y="90" fill="#eab308" font-size="11" font-weight="bold" class="hidden">OVERPRESSURE RELIEF KE TANGKI</text>
+
+                    <!-- Pressure Gauge (PG-1) -->
+                    <circle cx="650" cy="265" r="16" fill="#ffffff" stroke="#64748b" stroke-width="2"/>
+                    <line points="650,281 650,290" stroke="#64748b" stroke-width="2"/>
+                    <text x="650" y="244" fill="#f8fafc" font-size="10" text-anchor="middle">PG-1</text>
+                    <text id="pg-value" x="650" y="270" fill="#0f172a" font-size="10" font-weight="bold" text-anchor="middle" font-family="monospace">0.0</text>
+
+                    <!-- Control Valve (V-2) -->
+                    <polygon points="710,280 710,300 730,290" fill="#cbd5e1"/>
+                    <polygon points="750,280 750,300 730,290" fill="#cbd5e1"/>
+                    <text id="txt-v2" x="730" y="318" fill="#e2e8f0" font-size="11" text-anchor="middle" font-weight="bold">V-2: 0%</text>
+
+                    <!-- Flowmeter M-30 -->
+                    <rect x="770" y="270" width="32" height="40" fill="#0284c7" rx="3"/>
+                    <text x="786" y="260" fill="#ffffff" font-size="10" text-anchor="middle" font-weight="bold">LC M-30</text>
+                    <text id="fm-value" x="786" y="294" fill="#ffffff" font-size="10" font-weight="bold" text-anchor="middle" font-family="monospace">0 L/s</text>
+
+                    <!-- Fuel Truck Point -->
+                    <polyline points="820,290 820,340" fill="none" stroke="#334155" stroke-width="10"/>
+                    <polyline id="flow-truck" points="820,290 820,340" fill="none" stroke="#38bdf8" stroke-width="5" class="hidden flow-anim"/>
+                    
+                    <rect x="770" y="340" width="100" height="60" fill="#d97706" rx="6"/>
+                    <rect x="875" y="350" width="35" height="50" fill="#64748b" rx="4"/>
+                    <circle cx="790" cy="400" r="9" fill="#1e293b"/>
+                    <circle cx="840" cy="400" r="9" fill="#1e293b"/>
+                    <circle cx="890" cy="400" r="9" fill="#1e293b"/>
+                    <text x="820" y="375" fill="#ffffff" font-size="12" font-weight="bold" text-anchor="middle">FUEL TRUCK</text>
+                    <text id="truck-vol-text" x="820" y="430" fill="#f8fafc" font-size="12" text-anchor="middle" font-weight="bold" font-family="monospace">0 / 16,000 L</text>
+
+                </svg>
+            </div>
+
+            <!-- Diagnostics Bar at bottom of SVG -->
+            <div class="mt-2 bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 text-xs">
+                <div class="flex items-center gap-2">
+                    <span class="text-slate-500 font-semibold uppercase">Log Diagnostik:</span>
+                    <span id="diag-text" class="text-slate-300 font-mono">Sistem Standby.</span>
+                </div>
+                <div id="truck-status-badge" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono text-[11px]">
+                    TRUK: KOSONG
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Side Panel: Controls + Gemini AI Assistant -->
+        <div id="control-panel-container" class="w-full lg:w-5/12 xl:w-1/3 flex flex-col gap-4 max-h-[85vh]">
+            
+            <!-- SCADA Interactive Control Panel -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 sm:p-4 flex flex-col gap-3 shadow-xl overflow-y-auto">
+                
+                <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <h2 class="text-base font-bold text-slate-200 flex items-center gap-2">
+                        🎛️ PANEL KONTROL SCADA
+                    </h2>
+                    <button id="btn-reset-system" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2.5 py-1 rounded transition-colors">
+                        Reset Semua
+                    </button>
+                </div>
+
+                <!-- Emergency & Trip Acknowledge Action Box -->
+                <div id="trip-control-box" class="hidden bg-red-950/60 border border-red-800/80 p-3 rounded-lg flex flex-col gap-2">
+                    <div class="text-xs text-red-300 font-semibold flex items-center gap-1.5">
+                        ⚠️ SISTEM TRIP (INTERLOCK KESELAMATAN)
+                    </div>
+                    <p class="text-[11px] text-slate-300">
+                        Pressure Switch PS-1 mendeteksi overpressure (>4.1 Bar). Pompa mati otomatis. Hilangkan restriksi sebelum mereset.
+                    </p>
+                    <button id="btn-ack-reset" class="w-full bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-3 rounded text-xs transition-colors shadow-md uppercase tracking-wider">
+                        Konfirmasi Masalah & Reset Interlock
+                    </button>
+                </div>
+
+                <!-- Storage Tank Controls -->
+                <div class="bg-slate-950/80 p-3 rounded-lg border border-slate-800">
+                    <div class="flex justify-between items-center mb-1">
+                        <label class="text-xs font-semibold text-slate-300">Volume Tangki Utama</label>
+                        <span id="lbl-tank" class="text-xs font-mono text-blue-400 font-bold">1,500,000 L</span>
+                    </div>
+                    <input type="range" id="ctrl-tank" min="0" max="1500000" value="1500000" step="25000" class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                </div>
+
+                <!-- Line A Controls -->
+                <div class="bg-slate-950/80 p-3 rounded-lg border-l-4 border-blue-500 border-t border-r border-b border-slate-800/80 flex flex-col gap-2.5">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-xs font-bold text-blue-400 uppercase tracking-wide">Jalur Pompa A (Atas)</h3>
+                        <span id="badge-pump-a" class="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">OFF</span>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                            <div class="flex justify-between text-[11px] mb-1 text-slate-400">
+                                <span>Bukaan BV-A</span>
+                                <span id="lbl-valve-a" class="font-mono text-slate-200">100%</span>
+                            </div>
+                            <input type="range" id="ctrl-valve-a" min="0" max="100" value="100" class="w-full h-1.5 bg-slate-800 rounded appearance-none cursor-pointer accent-blue-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-[11px] mb-1 text-slate-400">
+                                <span>Kebersihan Str-A</span>
+                                <span id="lbl-strainer-a" class="font-mono text-slate-200">100%</span>
+                            </div>
+                            <input type="range" id="ctrl-strainer-a" min="0" max="100" value="100" class="w-full h-1.5 bg-slate-800 rounded appearance-none cursor-pointer accent-orange-500">
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between text-[11px] mb-1 text-slate-400">
+                            <span>Kecepatan VFD Pompa A</span>
+                            <span id="lbl-speed-a" class="font-mono text-blue-300">100%</span>
+                        </div>
+                        <input type="range" id="ctrl-speed-a" min="20" max="100" value="100" class="w-full h-1.5 bg-slate-800 rounded appearance-none cursor-pointer accent-emerald-500">
+                    </div>
+
+                    <button id="btn-pump-a" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-2 px-3 rounded text-xs transition-colors border border-slate-700 flex justify-center items-center gap-2">
+                        <span>Sakelar Motor Pompa A</span>
+                    </button>
+                </div>
+
+                <!-- Line B Controls -->
+                <div class="bg-slate-950/80 p-3 rounded-lg border-l-4 border-sky-500 border-t border-r border-b border-slate-800/80 flex flex-col gap-2.5">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-xs font-bold text-sky-400 uppercase tracking-wide">Jalur Pompa B (Bawah)</h3>
+                        <span id="badge-pump-b" class="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">OFF</span>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                            <div class="flex justify-between text-[11px] mb-1 text-slate-400">
+                                <span>Bukaan BV-B</span>
+                                <span id="lbl-valve-b" class="font-mono text-slate-200">100%</span>
+                            </div>
+                            <input type="range" id="ctrl-valve-b" min="0" max="100" value="100" class="w-full h-1.5 bg-slate-800 rounded appearance-none cursor-pointer accent-sky-500">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-[11px] mb-1 text-slate-400">
+                                <span>Kebersihan Str-B</span>
+                                <span id="lbl-strainer-b" class="font-mono text-slate-200">100%</span>
+                            </div>
+                            <input type="range" id="ctrl-strainer-b" min="0" max="100" value="100" class="w-full h-1.5 bg-slate-800 rounded appearance-none cursor-pointer accent-orange-500">
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between text-[11px] mb-1 text-slate-400">
+                            <span>Kecepatan VFD Pompa B</span>
+                            <span id="lbl-speed-b" class="font-mono text-sky-300">100%</span>
+                        </div>
+                        <input type="range" id="ctrl-speed-b" min="20" max="100" value="100" class="w-full h-1.5 bg-slate-800 rounded appearance-none cursor-pointer accent-emerald-500">
+                    </div>
+
+                    <button id="btn-pump-b" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-2 px-3 rounded text-xs transition-colors border border-slate-700 flex justify-center items-center gap-2">
+                        <span>Sakelar Motor Pompa B</span>
+                    </button>
+                </div>
+
+                <!-- Discharge Line Controls -->
+                <div class="bg-slate-950/80 p-3 rounded-lg border border-slate-800 flex flex-col gap-2">
+                    <div class="flex justify-between items-center text-xs">
+                        <label class="font-semibold text-slate-300">Control Valve Pengisian V-2</label>
+                        <span id="lbl-v2" class="font-mono text-blue-400 font-bold">0%</span>
+                    </div>
+                    <input type="range" id="ctrl-v2" min="0" max="100" value="0" class="w-full h-2 bg-slate-800 rounded appearance-none cursor-pointer accent-blue-500">
+                </div>
+
+                <!-- Truck Management Actions -->
+                <div class="flex gap-2">
+                    <button id="btn-reset-truck" class="flex-grow bg-amber-600 hover:bg-amber-500 text-white font-bold py-2 px-3 rounded text-xs transition-colors shadow-md">
+                        Kosongkan Truk BBM (16.000 L)
+                    </button>
+                </div>
+
+            </div>
+
+            <!-- Gemini AI Engineering Assistant Box -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col h-64 shadow-xl">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="text-base">🤖</span>
+                        <h3 class="text-xs font-bold text-purple-400 uppercase tracking-wide">Asisten AI Gemini SCADA</h3>
+                    </div>
+                    <span class="text-[10px] text-slate-500 font-mono">gemini-2.5-flash</span>
+                </div>
+
+                <!-- Chat Box Messages -->
+                <div id="ai-chat-box" class="flex-grow overflow-y-auto space-y-2 text-xs p-2 bg-slate-950 rounded border border-slate-800/80 font-sans">
+                    <div class="p-2 bg-purple-950/40 border border-purple-800/40 rounded text-slate-300">
+                        <strong>Gemini:</strong> Halo! Saya asisten teknik SCADA Anda. Saya memantau sistem perpipaan ini secara real-time. Ada yang bisa saya bantu jelaskan?
+                    </div>
+                </div>
+
+                <!-- Chat Input Form -->
+                <form id="ai-chat-form" class="mt-2 flex gap-1.5">
+                    <input type="text" id="ai-input-text" placeholder="Tanyakan kondisi sistem..." class="flex-grow bg-slate-950 border border-slate-800 text-xs px-2.5 py-1.5 rounded text-slate-200 focus:outline-none focus:border-purple-500">
+                    <button type="submit" class="bg-purple-700 hover:bg-purple-600 text-white text-xs px-3 py-1.5 rounded font-semibold transition-colors">
+                        Kirim
+                    </button>
+                </form>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Logic, Physics & AI Script -->
+    <script>
+        const apiKey = ""; // Disertakan otomatis di lingkungan runtime
+
+        // System SCADA State
+        let state = {
+            tankVol: 1500000,
+            truckVol: 0,
+            truckMax: 16000,
+            v2Percent: 0,
+            pressure: 1.2,
+            flowrate: 0,
+            
+            lineA: {
+                pumpOn: false,
+                valvePercent: 100,
+                strainerClean: 100,
+                speedPercent: 100,
+                cavitation: false
+            },
+            lineB: {
+                pumpOn: false,
+                valvePercent: 100,
+                strainerClean: 100,
+                speedPercent: 100,
+                cavitation: false
+            },
+            
+            psTrip: false,
+            prvRelieving: false,
+            audioEnabled: false,
+            alarmAcknowledged: false
+        };
+
+        // DOM Element Registry
+        const DOM = {
+            tankLevel: document.getElementById('tank-level'),
+            tankVolText: document.getElementById('tank-vol-text'),
+            truckVolText: document.getElementById('truck-vol-text'),
+            pgValue: document.getElementById('pg-value'),
+            fmValue: document.getElementById('fm-value'),
+            prvPressure: document.getElementById('prv-actual-pressure'),
+            
+            txtValveA: document.getElementById('txt-valve-a'),
+            txtStrainerA: document.getElementById('txt-strainer-a'),
+            txtPumpASpeed: document.getElementById('txt-pump-a-speed'),
+            txtValveB: document.getElementById('txt-valve-b'),
+            txtStrainerB: document.getElementById('txt-strainer-b'),
+            txtPumpBSpeed: document.getElementById('txt-pump-b-speed'),
+            txtV2: document.getElementById('txt-v2'),
+            
+            flowLineA: document.getElementById('flow-line-a'),
+            flowLineB: document.getElementById('flow-line-b'),
+            flowMain: document.getElementById('flow-main'),
+            flowMainB: document.getElementById('flow-main-b'),
+            prvFlow: document.getElementById('prv-flow'),
+            flowTruck: document.getElementById('flow-truck'),
+            
+            pumpA: document.getElementById('pump-a'),
+            pumpB: document.getElementById('pump-b'),
+            badgePumpA: document.getElementById('badge-pump-a'),
+            badgePumpB: document.getElementById('badge-pump-b'),
+            
+            prvWarn: document.getElementById('prv-warn'),
+            psTripText: document.getElementById('ps-trip-text'),
+            ps1Rect: document.getElementById('ps-1'),
+            alarmBanner: document.getElementById('alarm-banner'),
+            alarmBannerText: document.getElementById('alarm-banner-text'),
+            tripControlBox: document.getElementById('trip-control-box'),
+            diagText: document.getElementById('diag-text'),
+            scadaStateText: document.getElementById('scada-state-text'),
+            headerPressText: document.getElementById('header-press-text'),
+            headerFlowText: document.getElementById('header-flow-text'),
+            truckStatusBadge: document.getElementById('truck-status-badge'),
+            
+            btnPumpA: document.getElementById('btn-pump-a'),
+            btnPumpB: document.getElementById('btn-pump-b'),
+            btnAckReset: document.getElementById('btn-ack-reset'),
+            btnAckBanner: document.getElementById('btn-ack-banner'),
+            btnAudioInit: document.getElementById('btn-audio-init'),
+            audioIcon: document.getElementById('audio-icon'),
+            audioLabel: document.getElementById('audio-label'),
+
+            aiChatBox: document.getElementById('ai-chat-box'),
+            aiChatForm: document.getElementById('ai-chat-form'),
+            aiInputText: document.getElementById('ai-input-text')
+        };
+
+        // Audio Synth Engine Initialization
+        let synthAlarm = null;
+        function initAudio() {
+            if (state.audioEnabled) return;
+            Tone.start();
+            synthAlarm = new Tone.Synth({
+                oscillator: { type: "sawtooth" },
+                envelope: { attack: 0.05, decay: 0.2, sustain: 0.2, release: 0.2 }
+            }).toDestination();
+            synthAlarm.volume.value = -10;
+            state.audioEnabled = true;
+            DOM.audioIcon.innerText = "🔊";
+            DOM.audioLabel.innerText = "Suara Aktif";
+            DOM.btnAudioInit.className = "bg-emerald-900/60 text-emerald-300 border border-emerald-700 p-2 rounded-lg text-xs flex items-center gap-1";
+        }
+
+        let alarmInterval = null;
+        function playAlarmSound() {
+            if (!state.audioEnabled || !synthAlarm) return;
+            if (!alarmInterval) {
+                alarmInterval = setInterval(() => {
+                    synthAlarm.triggerAttackRelease("A5", "0.15s");
+                }, 400);
+            }
+        }
+        function stopAlarmSound() {
+            if (alarmInterval) {
+                clearInterval(alarmInterval);
+                alarmInterval = null;
+            }
+        }
+
+        // Viewport Switcher Handlers
+        const appContainer = document.getElementById('app-container');
+        document.getElementById('view-auto').addEventListener('click', (e) => {
+            appContainer.className = "flex-grow p-2 sm:p-4 max-w-[1800px] w-full mx-auto flex flex-col lg:flex-row gap-4 transition-all duration-300";
+            updateViewButtons(e.target);
+        });
+        document.getElementById('view-desktop').addEventListener('click', (e) => {
+            appContainer.className = "flex-grow p-4 max-w-[1800px] w-full mx-auto flex flex-row gap-4 transition-all duration-300";
+            updateViewButtons(e.target);
+        });
+        document.getElementById('view-mobile').addEventListener('click', (e) => {
+            appContainer.className = "flex-grow p-2 max-w-[500px] w-full mx-auto flex flex-col gap-4 transition-all duration-300";
+            updateViewButtons(e.target);
+        });
+        function updateViewButtons(activeBtn) {
+            ['view-auto', 'view-desktop', 'view-mobile'].forEach(id => {
+                const btn = document.getElementById(id);
+                btn.className = "px-2 py-1 rounded text-slate-400 hover:text-white transition-all";
+            });
+            activeBtn.className = "px-2 py-1 rounded bg-blue-600 text-white font-medium transition-all";
+        }
+
+        // Event Listeners for UI Sliders
+        document.getElementById('ctrl-tank').addEventListener('input', (e) => {
+            state.tankVol = parseFloat(e.target.value);
+            document.getElementById('lbl-tank').innerText = state.tankVol.toLocaleString() + " L";
+        });
+        document.getElementById('ctrl-valve-a').addEventListener('input', (e) => {
+            state.lineA.valvePercent = parseInt(e.target.value);
+            document.getElementById('lbl-valve-a').innerText = state.lineA.valvePercent + "%";
+            DOM.txtValveA.textContent = "BV-A: " + state.lineA.valvePercent + "%";
+        });
+        document.getElementById('ctrl-strainer-a').addEventListener('input', (e) => {
+            state.lineA.strainerClean = parseInt(e.target.value);
+            document.getElementById('lbl-strainer-a').innerText = state.lineA.strainerClean + "%";
+            DOM.txtStrainerA.textContent = "Str-A: " + state.lineA.strainerClean + "%";
+        });
+        document.getElementById('ctrl-speed-a').addEventListener('input', (e) => {
+            state.lineA.speedPercent = parseInt(e.target.value);
+            document.getElementById('lbl-speed-a').innerText = state.lineA.speedPercent + "%";
+            DOM.txtPumpASpeed.textContent = "Ebsray V40 (" + state.lineA.speedPercent + "%)";
+        });
+
+        document.getElementById('ctrl-valve-b').addEventListener('input', (e) => {
+            state.lineB.valvePercent = parseInt(e.target.value);
+            document.getElementById('lbl-valve-b').innerText = state.lineB.valvePercent + "%";
+            DOM.txtValveB.textContent = "BV-B: " + state.lineB.valvePercent + "%";
+        });
+        document.getElementById('ctrl-strainer-b').addEventListener('input', (e) => {
+            state.lineB.strainerClean = parseInt(e.target.value);
+            document.getElementById('lbl-strainer-b').innerText = state.lineB.strainerClean + "%";
+            DOM.txtStrainerB.textContent = "Str-B: " + state.lineB.strainerClean + "%";
+        });
+        document.getElementById('ctrl-speed-b').addEventListener('input', (e) => {
+            state.lineB.speedPercent = parseInt(e.target.value);
+            document.getElementById('lbl-speed-b').innerText = state.lineB.speedPercent + "%";
+            DOM.txtPumpBSpeed.textContent = "Ebsray V40 (" + state.lineB.speedPercent + "%)";
+        });
+
+        document.getElementById('ctrl-v2').addEventListener('input', (e) => {
+            state.v2Percent = parseInt(e.target.value);
+            document.getElementById('lbl-v2').innerText = state.v2Percent + "%";
+            DOM.txtV2.textContent = "V-2: " + state.v2Percent + "%";
+        });
+
+        // Pump Control Actions
+        DOM.btnPumpA.addEventListener('click', () => {
+            initAudio();
+            if (state.psTrip) return;
+            state.lineA.pumpOn = !state.lineA.pumpOn;
+            updatePumpUI();
+        });
+        DOM.btnPumpB.addEventListener('click', () => {
+            initAudio();
+            if (state.psTrip) return;
+            state.lineB.pumpOn = !state.lineB.pumpOn;
+            updatePumpUI();
+        });
+        DOM.btnAudioInit.addEventListener('click', initAudio);
+
+        // Acknowledge / Reset Actions
+        DOM.btnAckReset.addEventListener('click', resetTripInterlock);
+        DOM.btnAckBanner.addEventListener('click', () => {
+            state.alarmAcknowledged = true;
+            DOM.alarmBanner.classList.add('hidden');
+            stopAlarmSound();
+        });
+        document.getElementById('btn-reset-system').addEventListener('click', () => {
+            resetTripInterlock();
+            state.truckVol = 0;
+            state.v2Percent = 0;
+            document.getElementById('ctrl-v2').value = 0;
+            document.getElementById('lbl-v2').innerText = "0%";
+            DOM.txtV2.textContent = "V-2: 0%";
+        });
+        document.getElementById('btn-reset-truck').addEventListener('click', () => {
+            state.truckVol = 0;
+        });
+
+        function resetTripInterlock() {
+            state.psTrip = false;
+            state.alarmAcknowledged = false;
+            DOM.psTripText.classList.add('hidden');
+            DOM.ps1Rect.setAttribute('fill', '#eab308');
+            DOM.alarmBanner.classList.add('hidden');
+            DOM.tripControlBox.classList.add('hidden');
+            stopAlarmSound();
+            updatePumpUI();
+        }
+
+        function updatePumpUI() {
+            DOM.btnPumpA.className = state.lineA.pumpOn ? 
+                "w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-3 rounded text-xs transition-colors shadow-md" : 
+                "w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-2 px-3 rounded text-xs transition-colors border border-slate-700";
+            DOM.pumpA.setAttribute('fill', state.lineA.pumpOn ? '#22c55e' : '#1e293b');
+            DOM.badgePumpA.innerText = state.lineA.pumpOn ? "RUNNING" : "OFF";
+            DOM.badgePumpA.className = state.lineA.pumpOn ? "text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono border border-emerald-800" : "text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono";
+
+            DOM.btnPumpB.className = state.lineB.pumpOn ? 
+                "w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-3 rounded text-xs transition-colors shadow-md" : 
+                "w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-2 px-3 rounded text-xs transition-colors border border-slate-700";
+            DOM.pumpB.setAttribute('fill', state.lineB.pumpOn ? '#22c55e' : '#1e293b');
+            DOM.badgePumpB.innerText = state.lineB.pumpOn ? "RUNNING" : "OFF";
+            DOM.badgePumpB.className = state.lineB.pumpOn ? "text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono border border-emerald-800" : "text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono";
+        }
+
+        // SCADA Simulation Loop
+        let lastTripState = false;
+        function simulate() {
+            let diagnostics = [];
+            
+            // 1. Suction Restrictions
+            let suctionRestA = (state.lineA.valvePercent / 100) * (state.lineA.strainerClean / 100);
+            let suctionRestB = (state.lineB.valvePercent / 100) * (state.lineB.strainerClean / 100);
+            
+            state.lineA.cavitation = state.lineA.pumpOn && (suctionRestA < 0.4);
+            state.lineB.cavitation = state.lineB.pumpOn && (suctionRestB < 0.4);
+
+            // 2. Pump Capacity Resolution (L/s)
+            let capA = state.lineA.pumpOn ? (state.lineA.cavitation ? 4 : 30 * suctionRestA * (state.lineA.speedPercent / 100)) : 0;
+            let capB = state.lineB.pumpOn ? (state.lineB.cavitation ? 4 : 30 * suctionRestB * (state.lineB.speedPercent / 100)) : 0;
+            let totalPumpCapacity = capA + capB;
+
+            // 3. Pressure Calculation
+            state.prvRelieving = false;
+            state.pressure = 1.2;
+            let actualDeliveryFlow = 0;
+
+            if (totalPumpCapacity > 0) {
+                let effectiveV2 = state.truckVol >= state.truckMax ? 0 : state.v2Percent;
+                
+                if (effectiveV2 === 0) {
+                    state.pressure = 9.5; // Shutoff deadhead
+                    actualDeliveryFlow = 0;
+                } else {
+                    let frictionLoss = (totalPumpCapacity / 60) * 3.6; 
+                    let valveRelief = (effectiveV2 / 100) * 1.6;
+                    state.pressure = 2.4 + frictionLoss - valveRelief;
+                }
+                
+                // Pressure Switch (PS-1) Interlock Trigger at 4.1 Bar
+                if (state.pressure >= 4.1 && totalPumpCapacity > 18) {
+                    state.psTrip = true;
+                    state.lineA.pumpOn = false;
+                    state.lineB.pumpOn = false;
+                    state.pressure = 1.2;
+                    totalPumpCapacity = 0;
+                    actualDeliveryFlow = 0;
+                    updatePumpUI();
+                    
+                    DOM.tripControlBox.classList.remove('hidden');
+                    if (!state.alarmAcknowledged) {
+                        DOM.alarmBanner.classList.remove('hidden');
+                        DOM.alarmBannerText.innerText = "TRIP! PRESSURE MELEBIHI 4.1 BAR (INTERLOCK PS-1)";
+                        playAlarmSound();
+                    }
+                    diagnostics.push("<span class='text-red-500 font-bold'>CRITICAL INTERLOCK TRIP: PS-1 > 4.1 Bar! Kapasitas PRV 1\" terlampaui.</span>");
+                } else if (state.pressure >= 4.0) {
+                    state.pressure = 4.0;
+                    state.prvRelieving = true;
+                    actualDeliveryFlow = totalPumpCapacity * (effectiveV2 / 100) * 0.65;
+                    diagnostics.push("<span class='text-amber-400 font-semibold'>PRV RELIEVING: Overpressure (4.0 Bar) melakukan bypass ke tangki.</span>");
+                } else {
+                    actualDeliveryFlow = totalPumpCapacity * (effectiveV2 / 100);
+                }
+            }
+
+            state.flowrate = actualDeliveryFlow;
+
+            // Auto Trigger AI on New Trip
+            if (state.psTrip && !lastTripState) {
+                triggerAITripDiagnostic();
+            }
+            lastTripState = state.psTrip;
+
+            // 4. Volume Updates
+            if (state.flowrate > 0 && state.tankVol > 0 && state.truckVol < state.truckMax) {
+                state.truckVol += state.flowrate / 10;
+                state.tankVol -= state.flowrate / 10;
+                if (state.truckVol > state.truckMax) state.truckVol = state.truckMax;
+            }
+
+            // 5. Visual Updates
+            let tankY = 90 + (260 * (1 - (state.tankVol / 1500000)));
+            DOM.tankLevel.setAttribute('y', tankY);
+            DOM.tankLevel.setAttribute('height', 350 - tankY);
+            DOM.tankVolText.textContent = Math.round(state.tankVol).toLocaleString() + " L";
+            DOM.truckVolText.textContent = Math.round(state.truckVol).toLocaleString() + " / 16,000 L";
+
+            DOM.pgValue.textContent = state.pressure.toFixed(1);
+            DOM.prvPressure.textContent = state.pressure.toFixed(1) + " Bar";
+            DOM.fmValue.textContent = state.flowrate.toFixed(1) + " L/s";
+            
+            DOM.headerPressText.textContent = state.pressure.toFixed(1) + " Bar";
+            DOM.headerFlowText.textContent = state.flowrate.toFixed(1) + " L/s";
+
+            // Flow Animations
+            toggleFlow(DOM.flowLineA, state.lineA.pumpOn && capA > 0);
+            toggleFlow(DOM.flowLineB, state.lineB.pumpOn && capB > 0);
+            toggleFlow(DOM.flowMain, totalPumpCapacity > 0);
+            toggleFlow(DOM.flowMainB, state.lineB.pumpOn && capB > 0);
+            toggleFlow(DOM.flowTruck, state.flowrate > 0);
+            
+            if (state.prvRelieving) {
+                DOM.prvFlow.classList.remove('hidden');
+                DOM.prvWarn.classList.remove('hidden');
+            } else {
+                DOM.prvFlow.classList.add('hidden');
+                DOM.prvWarn.classList.add('hidden');
+            }
+
+            if (state.psTrip) {
+                DOM.psTripText.classList.remove('hidden');
+                DOM.ps1Rect.setAttribute('fill', '#ef4444');
+                DOM.scadaStateText.innerText = "TRIPPED";
+                DOM.scadaStateText.className = "text-red-500 font-bold animate-pulse";
+            } else {
+                DOM.scadaStateText.innerText = (state.lineA.pumpOn || state.lineB.pumpOn) ? "RUNNING" : "READY";
+                DOM.scadaStateText.className = (state.lineA.pumpOn || state.lineB.pumpOn) ? "text-emerald-400 font-bold" : "text-blue-400 font-bold";
+            }
+
+            // Cavitation Highlights
+            if (state.lineA.cavitation) {
+                DOM.pumpA.classList.add('cavitation-shake');
+                diagnostics.push("<span class='text-pink-400 font-semibold'>KAVITASI P-A: NPSH Rendah! Periksa BV-A/Strainer.</span>");
+            } else {
+                DOM.pumpA.classList.remove('cavitation-shake');
+            }
+            if (state.lineB.cavitation) {
+                DOM.pumpB.classList.add('cavitation-shake');
+                diagnostics.push("<span class='text-pink-400 font-semibold'>KAVITASI P-B: NPSH Rendah! Periksa BV-B/Strainer.</span>");
+            } else {
+                DOM.pumpB.classList.remove('cavitation-shake');
+            }
+
+            // Truck Status Badge
+            if (state.truckVol >= state.truckMax) {
+                DOM.truckStatusBadge.innerText = "TRUK: PENUH (100%)";
+                DOM.truckStatusBadge.className = "px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono text-[11px] border border-emerald-800";
+                diagnostics.push("<span class='text-blue-300'>Pengisian Fuel Truck selesai. Tutup V-2 atau matikan Pompa.</span>");
+            } else if (state.truckVol > 0) {
+                let pct = Math.round((state.truckVol / state.truckMax) * 100);
+                DOM.truckStatusBadge.innerText = `TRUK: PENGISIAN (${pct}%)`;
+                DOM.truckStatusBadge.className = "px-2 py-0.5 rounded bg-blue-950 text-blue-300 font-mono text-[11px] border border-blue-800";
+            } else {
+                DOM.truckStatusBadge.innerText = "TRUK: KOSONG";
+                DOM.truckStatusBadge.className = "px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono text-[11px]";
+            }
+
+            if (diagnostics.length === 0 && totalPumpCapacity > 0) {
+                diagnostics.push("<span class='text-emerald-400 font-mono'>Sistem Beroperasi Normal.</span>");
+            } else if (diagnostics.length === 0) {
+                diagnostics.push("<span class='text-slate-400 font-mono'>Sistem Standby. Siap untuk urutan start.</span>");
+            }
+
+            DOM.diagText.innerHTML = diagnostics.join(" | ");
+        }
+
+        function toggleFlow(element, isActive) {
+            if (isActive) element.classList.remove('hidden');
+            else element.classList.add('hidden');
+        }
+
+        // --- Gemini API Integration ---
+        async function fetchGeminiAPI(promptText) {
+            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+            const systemInstruction = `Anda adalah Asisten Teknik Pakar SCADA dan Perpipaan Fuel. Berikan jawaban yang sangat singkat (maksimal 3 kalimat), praktis, dan berfokus pada analisis teknis perpipaan fluida (Ebsray V40, PRV 4 Bar, PS-1 Trip 4.1 Bar). Gunakan Bahasa Indonesia.`;
+
+            const payload = {
+                contents: [{ parts: [{ text: promptText }] }],
+                systemInstruction: { parts: [{ text: systemInstruction }] }
+            };
+
+            // Retries with exponential backoff
+            const delays = [1000, 2000, 4000, 8000, 16000];
+            for (let i = 0; i < 5; i++) {
+                try {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        return data.candidates?.[0]?.content?.parts?.[0]?.text || "Maaf, tidak dapat memproses analisis AI.";
+                    }
+                } catch (err) {
+                    // Retry silently
+                }
+                await new Promise(r => setTimeout(r, delays[i]));
+            }
+            return "Koneksi ke server AI gagal setelah beberapa kali percobaan.";
+        }
+
+        function appendChatMessage(sender, text, isAi = false) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = isAi 
+                ? "p-2 bg-purple-950/40 border border-purple-800/40 rounded text-slate-300" 
+                : "p-2 bg-slate-800 border border-slate-700 rounded text-slate-200 text-right";
+            msgDiv.innerHTML = `<strong>${sender}:</strong> ${text}`;
+            DOM.aiChatBox.appendChild(msgDiv);
+            DOM.aiChatBox.scrollTop = DOM.aiChatBox.scrollHeight;
+        }
+
+        async function triggerAITripDiagnostic() {
+            appendChatMessage("Gemini Diagnostic", "⚠️ Memproses analisis trip otomatis...", true);
+            const prompt = `ALARM TRIP TERJADI! Telemetri Sistem:
+            - Pressure Switch PS-1: TRIPPED (>4.1 Bar)
+            - Tekanan Gauge: ${state.pressure.toFixed(1)} Bar
+            - Bukaan Control Valve V-2: ${state.v2Percent}%
+            - Speed Pompa A: ${state.lineA.speedPercent}%, Speed Pompa B: ${state.lineB.speedPercent}%
+            Jelaskan secara ringkas mengapa trip ini terjadi dan langkah penyelesaiannya di SCADA.`;
+            
+            const aiReply = await fetchGeminiAPI(prompt);
+            appendChatMessage("Gemini", aiReply, true);
+        }
+
+        DOM.aiChatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const userText = DOM.aiInputText.value.trim();
+            if (!userText) return;
+
+            appendChatMessage("Anda", userText, false);
+            DOM.aiInputText.value = "";
+
+            const statusPrompt = `Pertanyaan Pengguna: "${userText}"
+            Status Sistem SCADA Saat Ini:
+            - Status: ${state.psTrip ? "TRIPPED" : "NORMAL"}
+            - Pressure: ${state.pressure.toFixed(1)} Bar
+            - Flowrate: ${state.flowrate.toFixed(1)} L/s
+            - Bukaan V-2: ${state.v2Percent}%
+            - Status Pompa A: ${state.lineA.pumpOn ? "ON" : "OFF"}, Speed: ${state.lineA.speedPercent}%, Suction BV-A: ${state.lineA.valvePercent}%
+            - Status Pompa B: ${state.lineB.pumpOn ? "ON" : "OFF"}, Speed: ${state.lineB.speedPercent}%, Suction BV-B: ${state.lineB.valvePercent}%
+            - Volume Tangki: ${Math.round(state.tankVol)} L, Volume Truk: ${Math.round(state.truckVol)} / 16000 L.
+            Jawab pertanyaan pengguna secara akurat dan singkat berdasarkan status di atas.`;
+
+            const aiReply = await fetchGeminiAPI(statusPrompt);
+            appendChatMessage("Gemini", aiReply, true);
+        });
+
+        // Run simulation at 10 Hz
+        setInterval(simulate, 100);
+
+    </script>
+</body>
+</html>
